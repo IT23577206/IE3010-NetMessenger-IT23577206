@@ -1,0 +1,46 @@
+# NetMessenger - IE3010 Network Programming
+
+## Student Information
+
+- Registration Number: IT23577206
+- Module: IE3010 - Network Programming
+- Assignment: NetMessenger: A Multi-Client Chat and File-Sharing Platform over TCP/IP
+
+## Personalised Configuration
+
+- Registration Number: IT23577206
+- Numeric Part: 23577206
+- Last Four Digits: 7206
+- Server Port: 13206
+- Node ID: NID:5772
+- Server Source File: server_7206.c
+- Client Source File: client_7206.c
+- Makefile: Makefile_7206
+- Log File: netmsg_IT23577206.log
+- Storage Path: ./storage/IT23577206/<sender_username>/<filename>
+
+## Project Overview
+
+NetMessenger is a TCP/IP based multi-client chat and file-sharing application implemented in C using the BSD sockets API.
+
+The completed system will support:
+
+- Multiple simultaneous clients
+- Unique username registration
+- Online user listing
+- Broadcast messaging
+- Private messaging
+- Chat rooms
+- Room messaging
+- File sharing
+- Graceful client disconnection
+- Error handling
+- Server-side logging
+
+## Build Instructions
+
+Build instructions will be added as the implementation progresses.
+
+## Development Status
+
+Project setup completed. TCP server and client implementation is the next development stage.
