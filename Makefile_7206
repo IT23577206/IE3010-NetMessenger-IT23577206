@@ -1,3 +1,16 @@
-# IE3010 NetMessenger Makefile
-# Registration Number: IT23577206
-# Build rules will be added with the first TCP implementation.
+CC = gcc
+CFLAGS = -Wall -Wextra -Wpedantic -std=c11
+
+SERVER = server_7206
+CLIENT = client_7206
+
+all: $(SERVER) $(CLIENT)
+
+$(SERVER): server_7206.c
+	$(CC) $(CFLAGS) server_7206.c -o $(SERVER)
+
+$(CLIENT): client_7206.c
+	$(CC) $(CFLAGS) client_7206.c -o $(CLIENT)
+
+clean:
+	rm -f $(SERVER) $(CLIENT)

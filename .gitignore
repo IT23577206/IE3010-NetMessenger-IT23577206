@@ -1,0 +1,12 @@
+# Compiled NetMessenger executables
+server_7206
+client_7206
+
+# Object files
+*.o
+
+# Runtime logs
+*.log
+
+# Runtime file storage
+storage/

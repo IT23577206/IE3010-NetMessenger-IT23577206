@@ -44,3 +44,23 @@ Build instructions will be added as the implementation progresses.
 ## Development Status
 
 Project setup completed. TCP server and client implementation is the next development stage.
+
+## Implementation Progress
+
+### Stage 1 - Project Setup
+Completed.
+
+### Stage 2 - Basic TCP Connection
+Completed.
+
+The current implementation successfully:
+
+- Creates TCP sockets using the BSD sockets API
+- Binds the server to personalised port 13206
+- Listens for incoming client connections
+- Accepts a TCP client connection
+- Connects the client to `127.0.0.1:13206`
+- Compiles using the personalised Makefile
+- Verifies the listening port using `ss -tlnp`
+
+The next stage is multi-client concurrency.

@@ -23,3 +23,17 @@ The personalised values calculated from registration number IT23577206 are:
 - Storage base path: ./storage/IT23577206/
 
 The next step is to implement and test a basic TCP connection between one server and one client.
+
+## Entry 2 - Basic TCP Client/Server Connection
+
+**Date:** 04 October 2026
+
+A working TCP client/server connection was implemented and tested.
+
+The server creates an IPv4 TCP socket using `socket()`, binds it to the personalised port 13206, places the socket into listening mode using `listen()`, and accepts a client connection using `accept()`.
+
+The client creates a TCP socket and connects to the server through the loopback address `127.0.0.1` on port 13206.
+
+Both programs compiled successfully using GCC. The server was also verified using `ss -tlnp`, which confirmed that `server_7206` was listening on the correct personalised port 13206.
+
+This version handles one client only. The next stage will introduce multi-client concurrency using POSIX threads.
