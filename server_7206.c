@@ -13,7 +13,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <signal.h>
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -25,7 +28,17 @@
 #define MAX_USERNAME 32
 #define MAX_ROOM_NAME 32
 #define MAX_ROOMS 32
+#define MAX_FILENAME 256
 #define MAX_LINE 1024
+
+/*
+ * The assignment defines FILE_TOO_LARGE but does not
+ * prescribe a numerical limit. This implementation
+ * uses a documented limit of 10 MiB.
+ */
+#define MAX_FILE_SIZE (10ULL * 1024ULL * 1024ULL)
+
+#define STORAGE_ROOT "./storage/IT23577206"
 
 typedef struct {
     int socket_fd;
@@ -745,6 +758,355 @@ static int room_message(Client *sender,
 
 
 /*
+ * Send raw binary bytes.
+ *
+ * Unlike send_all(), this function does not use
+ * strlen(), so zero bytes inside a file are safe.
+ */
+static int send_bytes(int socket_fd,
+                      const void *data,
+                      size_t length)
+{
+    const unsigned char *buffer =
+        (const unsigned char *)data;
+
+    size_t total = 0;
+
+    while (total < length) {
+
+        ssize_t sent =
+            send(socket_fd,
+                 buffer + total,
+                 length - total,
+                 0);
+
+        if (sent <= 0) {
+            return -1;
+        }
+
+        total += (size_t)sent;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Create a directory if it does not already exist.
+ */
+static int ensure_directory(const char *path)
+{
+    if (mkdir(path, 0755) == 0) {
+        return 0;
+    }
+
+    if (errno == EEXIST) {
+        return 0;
+    }
+
+    return -1;
+}
+
+
+/*
+ * Filenames in the line protocol are single tokens.
+ * Path separators and traversal components are
+ * rejected.
+ */
+static int valid_filename(const char *filename)
+{
+    if (filename == NULL ||
+        *filename == '\0' ||
+        strlen(filename) >= MAX_FILENAME) {
+
+        return 0;
+    }
+
+    if (strchr(filename, '/') != NULL ||
+        strchr(filename, '\\') != NULL ||
+        strcmp(filename, ".") == 0 ||
+        strcmp(filename, "..") == 0) {
+
+        return 0;
+    }
+
+    return 1;
+}
+
+
+/*
+ * Build the personalised server storage path:
+ *
+ * ./storage/IT23577206/<sender_username>/<filename>
+ */
+static int build_storage_path(const char *sender,
+                              const char *filename,
+                              char *output,
+                              size_t output_size)
+{
+    char registration_directory[256];
+    char sender_directory[512];
+
+    if (ensure_directory("./storage") < 0) {
+        return -1;
+    }
+
+    snprintf(registration_directory,
+             sizeof(registration_directory),
+             "%s",
+             STORAGE_ROOT);
+
+    if (ensure_directory(registration_directory) < 0) {
+        return -1;
+    }
+
+    snprintf(sender_directory,
+             sizeof(sender_directory),
+             "%s/%s",
+             STORAGE_ROOT,
+             sender);
+
+    if (ensure_directory(sender_directory) < 0) {
+        return -1;
+    }
+
+    int written =
+        snprintf(output,
+                 output_size,
+                 "%s/%s/%s",
+                 STORAGE_ROOT,
+                 sender,
+                 filename);
+
+    if (written < 0 ||
+        (size_t)written >= output_size) {
+
+        return -1;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Receive exactly filesize raw bytes from TCP and
+ * write them to a file.
+ */
+static int receive_exact_file(int socket_fd,
+                              FILE *output,
+                              unsigned long long filesize)
+{
+    unsigned char buffer[8192];
+
+    unsigned long long remaining =
+        filesize;
+
+    while (remaining > 0) {
+
+        size_t wanted =
+            remaining > sizeof(buffer)
+                ? sizeof(buffer)
+                : (size_t)remaining;
+
+        ssize_t received =
+            recv(socket_fd,
+                 buffer,
+                 wanted,
+                 0);
+
+        if (received <= 0) {
+            return -1;
+        }
+
+        size_t written =
+            fwrite(buffer,
+                   1,
+                   (size_t)received,
+                   output);
+
+        if (written != (size_t)received) {
+            return -1;
+        }
+
+        remaining -=
+            (unsigned long long)received;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Send the stored file to one recipient.
+ *
+ * We reuse the assignment's SENDFILE framing:
+ *
+ * SENDFILE <target> <filename> <filesize>\n
+ * <raw bytes>
+ *
+ * The send mutex remains locked for both the header
+ * and bytes so another message cannot be inserted
+ * in the middle of the file.
+ */
+static int send_file_to_client(Client *recipient,
+                               const char *target,
+                               const char *filename,
+                               unsigned long long filesize,
+                               const char *stored_path)
+{
+    char header[MAX_LINE];
+
+    snprintf(header,
+             sizeof(header),
+             "SENDFILE %s %s %llu\n",
+             target,
+             filename,
+             filesize);
+
+    FILE *input =
+        fopen(stored_path, "rb");
+
+    if (input == NULL) {
+        return -1;
+    }
+
+    pthread_mutex_lock(
+        &recipient->send_mutex);
+
+    int result = 0;
+
+    if (send_all(recipient->socket_fd,
+                 header) < 0) {
+
+        result = -1;
+    }
+    else {
+
+        unsigned char buffer[8192];
+
+        size_t count;
+
+        while ((count =
+                    fread(buffer,
+                          1,
+                          sizeof(buffer),
+                          input)) > 0) {
+
+            if (send_bytes(
+                    recipient->socket_fd,
+                    buffer,
+                    count) < 0) {
+
+                result = -1;
+
+                break;
+            }
+        }
+
+        if (ferror(input)) {
+            result = -1;
+        }
+    }
+
+    pthread_mutex_unlock(
+        &recipient->send_mutex);
+
+    fclose(input);
+
+    return result;
+}
+
+
+/*
+ * Deliver a stored file.
+ *
+ * Resolution rule:
+ * 1. A registered username is checked first.
+ * 2. If no user matches, an existing room is checked.
+ *
+ * Returns:
+ *  1 = username target found
+ *  2 = room target found
+ *  0 = no target found
+ */
+static int forward_stored_file(Client *sender,
+                               const char *target,
+                               const char *filename,
+                               unsigned long long filesize,
+                               const char *stored_path)
+{
+    /*
+     * First try target as a username.
+     */
+    pthread_mutex_lock(&clients_mutex);
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        if (clients[i] != NULL &&
+            clients[i]->registered &&
+            strcmp(clients[i]->username,
+                   target) == 0) {
+
+            send_file_to_client(
+                clients[i],
+                target,
+                filename,
+                filesize,
+                stored_path);
+
+            pthread_mutex_unlock(
+                &clients_mutex);
+
+            return 1;
+        }
+    }
+
+    pthread_mutex_unlock(
+        &clients_mutex);
+
+
+    /*
+     * Then try target as a room.
+     */
+    pthread_mutex_lock(&rooms_mutex);
+
+    int room_index =
+        find_room_locked(target);
+
+    if (room_index >= 0) {
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+
+            Client *member =
+                rooms[room_index].members[i];
+
+            if (member != NULL &&
+                member != sender &&
+                member->registered) {
+
+                send_file_to_client(
+                    member,
+                    target,
+                    filename,
+                    filesize,
+                    stored_path);
+            }
+        }
+
+        pthread_mutex_unlock(
+            &rooms_mutex);
+
+        return 2;
+    }
+
+    pthread_mutex_unlock(
+        &rooms_mutex);
+
+    return 0;
+}
+
+
+/*
  * Handle one client connection.
  */
 static void *handle_client(void *arg)
@@ -811,7 +1173,9 @@ static void *handle_client(void *arg)
 
             if (strlen(username) == 0 ||
                 strlen(username) >= MAX_USERNAME ||
-                strchr(username, ' ') != NULL) {
+                strchr(username, ' ') != NULL ||
+                strchr(username, '/') != NULL ||
+                strchr(username, '\\') != NULL) {
 
                 send_to_client(
                     client,
@@ -983,6 +1347,214 @@ static void *handle_client(void *arg)
 
 
         /*
+         * SENDFILE <target> <filename> <filesize>
+         *
+         * The command line is immediately followed
+         * by exactly <filesize> raw bytes.
+         */
+        if (strncmp(line,
+                    "SENDFILE ",
+                    9) == 0) {
+
+            char *arguments =
+                line + 9;
+
+            char *space1 =
+                strchr(arguments, ' ');
+
+            if (space1 == NULL) {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                break;
+            }
+
+            *space1 = '\0';
+
+            char *target =
+                arguments;
+
+            char *filename =
+                space1 + 1;
+
+            char *space2 =
+                strchr(filename, ' ');
+
+            if (space2 == NULL) {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                break;
+            }
+
+            *space2 = '\0';
+
+            char *size_text =
+                space2 + 1;
+
+
+            if (*target == '\0' ||
+                !valid_filename(filename) ||
+                *size_text == '\0' ||
+                strchr(size_text, ' ') != NULL) {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                break;
+            }
+
+
+            errno = 0;
+
+            char *end_pointer = NULL;
+
+            unsigned long long filesize =
+                strtoull(size_text,
+                         &end_pointer,
+                         10);
+
+
+            if (errno != 0 ||
+                end_pointer == size_text ||
+                *end_pointer != '\0') {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                break;
+            }
+
+
+            /*
+             * When a SENDFILE header is rejected,
+             * the connection is closed after the
+             * response because raw bytes may already
+             * be waiting in the TCP stream.
+             */
+            if (filesize > MAX_FILE_SIZE) {
+
+                send_to_client(
+                    client,
+                    "ERR 004 FILE_TOO_LARGE NID:5772\n");
+
+                break;
+            }
+
+
+            char storage_path[1024];
+
+
+            if (build_storage_path(
+                    client->username,
+                    filename,
+                    storage_path,
+                    sizeof(storage_path)) < 0) {
+
+                send_to_client(
+                    client,
+                    "ERR 011 STORAGE_ERROR NID:5772\n");
+
+                break;
+            }
+
+
+            FILE *output =
+                fopen(storage_path, "wb");
+
+
+            if (output == NULL) {
+
+                send_to_client(
+                    client,
+                    "ERR 011 STORAGE_ERROR NID:5772\n");
+
+                break;
+            }
+
+
+            printf("[FILE] Receiving %s from %s (%llu bytes)\n",
+                   filename,
+                   client->username,
+                   filesize);
+
+
+            if (receive_exact_file(
+                    client->socket_fd,
+                    output,
+                    filesize) < 0) {
+
+                fclose(output);
+
+                remove(storage_path);
+
+                printf("[FILE] Transfer interrupted: %s\n",
+                       filename);
+
+                break;
+            }
+
+
+            fclose(output);
+
+
+            int target_result =
+                forward_stored_file(
+                    client,
+                    target,
+                    filename,
+                    filesize,
+                    storage_path);
+
+
+            if (target_result == 0) {
+
+                /*
+                 * The protocol does not encode whether
+                 * a nonexistent target was intended as
+                 * a user or room. This implementation
+                 * checks users first, then rooms, and
+                 * uses USER_NOT_FOUND if neither exists.
+                 */
+                send_to_client(
+                    client,
+                    "ERR 002 USER_NOT_FOUND NID:5772\n");
+
+                continue;
+            }
+
+
+            char response[MAX_LINE];
+
+
+            snprintf(response,
+                     sizeof(response),
+                     "OK FILE_RECEIVED %s NID:5772\n",
+                     filename);
+
+
+            send_to_client(
+                client,
+                response);
+
+
+            printf("[FILE] %s -> %s : %s (%llu bytes)\n",
+                   client->username,
+                   target,
+                   filename,
+                   filesize);
+
+            continue;
+        }
+
+
+        /*
          * JOIN <room>
          */
         if (strncmp(line,
@@ -1067,7 +1639,7 @@ static void *handle_client(void *arg)
 
                 send_to_client(
                     client,
-                    "ERR 004 NOT_IN_ROOM NID:5772\n");
+                    "ERR 010 NOT_IN_ROOM NID:5772\n");
 
                 continue;
             }
@@ -1173,7 +1745,7 @@ static void *handle_client(void *arg)
 
                 send_to_client(
                     client,
-                    "ERR 004 NOT_IN_ROOM NID:5772\n");
+                    "ERR 010 NOT_IN_ROOM NID:5772\n");
 
                 continue;
             }

@@ -129,3 +129,23 @@ Implemented and tested:
 - Cleanup of room membership when a client disconnects
 
 The next development stage is TCP file sharing.
+
+### Stage 7 - TCP File Sharing
+Completed.
+
+Implemented and tested:
+
+- `SENDFILE <target> <filename> <filesize>`
+- Exact raw-byte TCP file transfer
+- User-to-user file delivery
+- File delivery to room members
+- Personalised server storage under `./storage/IT23577206/<sender_username>/`
+- Recipient-side file storage under `received_files/<username>/`
+- File-size verification
+- 10 MiB maximum file size
+- `ERR 004 FILE_TOO_LARGE NID:5772`
+- Unknown-target handling
+- Interrupted-transfer cleanup
+- SHA-256 and cmp integrity verification
+
+The next stage focuses on structured logging, robustness and final integration testing.

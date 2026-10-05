@@ -83,3 +83,17 @@ The server was extended with room data structures and handlers for JOIN, LEAVE, 
 
 **Evaluation / Changes Made:**
 The implementation was compiled and tested with multiple clients. Users successfully joined different rooms, messages were delivered only to room members, non-members were rejected, unknown rooms returned an error, users could leave and rejoin rooms, and empty rooms were automatically removed. Existing LIST and PMSG functionality was retested successfully.
+
+## Interaction 7
+
+**Date:** 05 October 2026
+**Tool:** ChatGPT
+
+**Prompt / Purpose:**
+Requested continued step-by-step guidance for implementing TCP file sharing to individual users and rooms, including raw-byte transfer, storage, validation and robustness testing.
+
+**How the output was used:**
+The server and client were extended to support SENDFILE. The implementation receives the exact declared number of bytes, stores a personalised server-side copy, forwards files to users or room members, and stores received files on recipient clients.
+
+**Evaluation / Changes Made:**
+Testing covered user-to-user transfer, room transfer, SHA-256 integrity, unknown targets, oversized files and interrupted transfers. The original file, server copy and recipient copies were verified as identical.

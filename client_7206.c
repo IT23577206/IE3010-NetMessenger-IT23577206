@@ -12,7 +12,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <signal.h>
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -21,9 +24,20 @@
 #define SERVER_IP "127.0.0.1"
 #define PORT 13206
 #define MAX_LINE 1024
+#define MAX_FILENAME 256
+#define MAX_USERNAME 32
+#define MAX_FILE_SIZE (10ULL * 1024ULL * 1024ULL)
 
 
 static volatile sig_atomic_t running = 1;
+
+/*
+ * Set after OK REGISTERED is received.
+ * Used only for organising files received by this
+ * particular client process.
+ */
+static char own_username[MAX_USERNAME] =
+    "unregistered";
 
 
 /*
@@ -101,6 +115,332 @@ static ssize_t recv_line(int socket_fd,
 
 
 /*
+ * Send raw binary bytes.
+ */
+static int send_bytes(int socket_fd,
+                      const void *data,
+                      size_t length)
+{
+    const unsigned char *buffer =
+        (const unsigned char *)data;
+
+    size_t total = 0;
+
+    while (total < length) {
+
+        ssize_t sent =
+            send(socket_fd,
+                 buffer + total,
+                 length - total,
+                 0);
+
+        if (sent <= 0) {
+            return -1;
+        }
+
+        total += (size_t)sent;
+    }
+
+    return 0;
+}
+
+
+static int ensure_directory(const char *path)
+{
+    if (mkdir(path, 0755) == 0) {
+        return 0;
+    }
+
+    if (errno == EEXIST) {
+        return 0;
+    }
+
+    return -1;
+}
+
+
+/*
+ * Receive a server-forwarded SENDFILE frame.
+ *
+ * Files are stored locally as:
+ *
+ * received_files/<recipient_username>/<filename>
+ */
+static int receive_forwarded_file(int socket_fd,
+                                  const char *header)
+{
+    char target[MAX_USERNAME];
+    char filename[MAX_FILENAME];
+
+    unsigned long long filesize;
+
+
+    if (sscanf(header,
+               "SENDFILE %31s %255s %llu",
+               target,
+               filename,
+               &filesize) != 3) {
+
+        return -1;
+    }
+
+
+    if (filesize > MAX_FILE_SIZE ||
+        strchr(filename, '/') != NULL ||
+        strchr(filename, '\\') != NULL) {
+
+        return -1;
+    }
+
+
+    if (ensure_directory(
+            "received_files") < 0) {
+
+        return -1;
+    }
+
+
+    char user_directory[512];
+
+
+    snprintf(user_directory,
+             sizeof(user_directory),
+             "received_files/%s",
+             own_username);
+
+
+    if (ensure_directory(
+            user_directory) < 0) {
+
+        return -1;
+    }
+
+
+    char path[1024];
+
+
+    snprintf(path,
+             sizeof(path),
+             "%s/%s",
+             user_directory,
+             filename);
+
+
+    FILE *output =
+        fopen(path, "wb");
+
+
+    if (output == NULL) {
+
+        return -1;
+    }
+
+
+    unsigned char buffer[8192];
+
+    unsigned long long remaining =
+        filesize;
+
+
+    while (remaining > 0) {
+
+        size_t wanted =
+            remaining > sizeof(buffer)
+                ? sizeof(buffer)
+                : (size_t)remaining;
+
+
+        ssize_t received =
+            recv(socket_fd,
+                 buffer,
+                 wanted,
+                 0);
+
+
+        if (received <= 0) {
+
+            fclose(output);
+
+            remove(path);
+
+            return -1;
+        }
+
+
+        if (fwrite(buffer,
+                   1,
+                   (size_t)received,
+                   output) !=
+            (size_t)received) {
+
+            fclose(output);
+
+            remove(path);
+
+            return -1;
+        }
+
+
+        remaining -=
+            (unsigned long long)received;
+    }
+
+
+    fclose(output);
+
+
+    printf("\nFILE RECEIVED\n");
+    printf("Target : %s\n", target);
+    printf("File   : %s\n", filename);
+    printf("Size   : %llu bytes\n", filesize);
+    printf("Saved  : %s\n", path);
+
+    fflush(stdout);
+
+
+    return 0;
+}
+
+
+/*
+ * Process a SENDFILE command entered by the user.
+ *
+ * The user types the exact assignment syntax:
+ *
+ * SENDFILE <target> <filename> <filesize>
+ */
+static int send_local_file(int socket_fd,
+                           const char *command_line)
+{
+    char target[MAX_USERNAME];
+    char filename[MAX_FILENAME];
+    char extra[2];
+
+    unsigned long long declared_size;
+
+
+    int count =
+        sscanf(command_line,
+               "SENDFILE %31s %255s %llu %1s",
+               target,
+               filename,
+               &declared_size,
+               extra);
+
+
+    if (count != 3) {
+
+        printf(
+            "Usage: SENDFILE <target> <filename> <filesize>\n");
+
+        return -1;
+    }
+
+
+    struct stat information;
+
+
+    if (stat(filename,
+             &information) < 0) {
+
+        perror("stat");
+
+        return -1;
+    }
+
+
+    if (!S_ISREG(information.st_mode)) {
+
+        printf(
+            "The specified path is not a regular file.\n");
+
+        return -1;
+    }
+
+
+    unsigned long long actual_size =
+        (unsigned long long)
+            information.st_size;
+
+
+    if (actual_size != declared_size) {
+
+        printf(
+            "File size mismatch. Actual size is %llu bytes.\n",
+            actual_size);
+
+        return -1;
+    }
+
+
+    FILE *input =
+        fopen(filename, "rb");
+
+
+    if (input == NULL) {
+
+        perror("fopen");
+
+        return -1;
+    }
+
+
+    /*
+     * Send the line exactly as entered, including
+     * its terminating newline.
+     */
+    if (send_all(socket_fd,
+                 command_line) < 0) {
+
+        fclose(input);
+
+        return -2;
+    }
+
+
+    unsigned char buffer[8192];
+
+    size_t read_count;
+
+
+    while ((read_count =
+                fread(buffer,
+                      1,
+                      sizeof(buffer),
+                      input)) > 0) {
+
+        if (send_bytes(socket_fd,
+                       buffer,
+                       read_count) < 0) {
+
+            fclose(input);
+
+            return -2;
+        }
+    }
+
+
+    if (ferror(input)) {
+
+        fclose(input);
+
+        return -1;
+    }
+
+
+    fclose(input);
+
+
+    printf(
+        "Sent %llu raw file bytes.\n",
+        actual_size);
+
+
+    return 0;
+}
+
+
+/*
  * Continuously receives responses and forwarded
  * messages from the server.
  */
@@ -126,6 +466,54 @@ static void *receiver_thread(void *arg)
             running = 0;
 
             break;
+        }
+
+
+        /*
+         * Remember this client's registered username.
+         */
+        if (strncmp(response,
+                    "OK REGISTERED ",
+                    14) == 0) {
+
+            char username[MAX_USERNAME];
+
+            if (sscanf(response,
+                       "OK REGISTERED %31s",
+                       username) == 1) {
+
+                strncpy(own_username,
+                        username,
+                        MAX_USERNAME - 1);
+
+                own_username[MAX_USERNAME - 1] =
+                    '\0';
+            }
+        }
+
+
+        /*
+         * A SENDFILE line from the server is followed
+         * immediately by raw bytes, so consume the
+         * complete file before reading another line.
+         */
+        if (strncmp(response,
+                    "SENDFILE ",
+                    9) == 0) {
+
+            if (receive_forwarded_file(
+                    socket_fd,
+                    response) < 0) {
+
+                printf(
+                    "\nFile reception failed.\n");
+
+                running = 0;
+
+                break;
+            }
+
+            continue;
         }
 
 
@@ -254,6 +642,7 @@ int main(void)
     printf("LEAVE <room>\n");
     printf("ROOMS\n");
     printf("RMSG <room> <message>\n");
+    printf("SENDFILE <target> <filename> <filesize>\n");
     printf("QUIT\n");
 
 
@@ -298,6 +687,33 @@ int main(void)
 
         if (!running) {
             break;
+        }
+
+
+        /*
+         * SENDFILE is special because its text header
+         * must be followed immediately by raw bytes.
+         */
+        if (strncmp(input,
+                    "SENDFILE ",
+                    9) == 0) {
+
+            int file_result =
+                send_local_file(
+                    client_socket,
+                    input);
+
+            if (file_result == -2) {
+
+                printf(
+                    "Connection lost during file transfer.\n");
+
+                running = 0;
+
+                break;
+            }
+
+            continue;
         }
 
 

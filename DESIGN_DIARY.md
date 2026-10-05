@@ -107,3 +107,25 @@ Testing confirmed successful room creation, room listing, room-only message deli
 Existing LIST and private messaging functionality were also retested successfully after the room implementation.
 
 The next stage is TCP file sharing.
+
+## Entry 7 - TCP File Sharing
+
+**Date:** 05 October 2026
+
+TCP file sharing was added to NetMessenger using the `SENDFILE <target> <filename> <filesize>` protocol.
+
+After the textual SENDFILE header, the client transmits exactly the declared number of raw file bytes. The server reads the file in a loop because TCP may divide the data across multiple recv() operations.
+
+The server stores each successfully received file under the personalised path:
+
+`./storage/IT23577206/<sender_username>/<filename>`
+
+Files can be sent either to an individual registered user or to a room. For room transfers, the file is forwarded to the other members of that room.
+
+The receiving client reads exactly the advertised filesize and stores the received file locally under `received_files/<username>/`.
+
+A maximum file size of 10 MiB was used as an implementation assumption because the assignment defines the FILE_TOO_LARGE error but does not specify a numerical limit.
+
+Testing confirmed successful user-to-user transfer, room transfer to multiple recipients, byte-for-byte integrity using SHA-256 and cmp, unknown-target handling, oversized-file rejection, and deletion of incomplete files following an interrupted transfer.
+
+The next development stage is structured logging, robustness and final integration testing.
