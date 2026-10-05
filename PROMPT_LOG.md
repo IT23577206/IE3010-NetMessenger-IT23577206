@@ -27,3 +27,17 @@ Implemented the basic server in `server_7206.c`, the basic client in `client_720
 
 **Evaluation / Changes Made:**  
 The code was compiled and tested in CentOS. The client successfully connected to the server at `127.0.0.1:13206`. The listening port was independently verified using `ss -tlnp`.
+
+## Interaction 3
+
+**Date:** 05 October 2026
+**Tool:** ChatGPT
+
+**Prompt / Purpose:**
+Requested step-by-step guidance for extending the NetMessenger TCP server to support at least five clients simultaneously.
+
+**How the output was used:**
+The server was updated to use POSIX threads so that each connected client is handled independently. The Makefile was updated with the `-pthread` compiler option, and the client was temporarily configured to remain connected until Enter was pressed.
+
+**Evaluation / Changes Made:**
+The implementation was compiled and tested in CentOS. Five clients connected simultaneously to port 13206. The connections were verified using `ss -tnp`, and all clients were disconnected individually to confirm correct thread and socket cleanup.

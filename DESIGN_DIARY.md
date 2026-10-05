@@ -37,3 +37,19 @@ The client creates a TCP socket and connects to the server through the loopback 
 Both programs compiled successfully using GCC. The server was also verified using `ss -tlnp`, which confirmed that `server_7206` was listening on the correct personalised port 13206.
 
 This version handles one client only. The next stage will introduce multi-client concurrency using POSIX threads.
+
+## Entry 3 - Multi-Client Concurrency
+
+**Date:** 05 October 2026
+
+The server was extended to support multiple simultaneous client connections using POSIX threads.
+
+Each accepted client connection is assigned to a separate thread using `pthread_create()`. This allows the main server thread to continue accepting new clients while existing clients remain connected.
+
+A mutex is used to protect the shared active-client counter so that concurrent threads do not update the value unsafely.
+
+The implementation was compiled using the `-pthread` option and tested with five simultaneous client connections. The server correctly reported the active-client count from one to five.
+
+Client disconnection was also tested. Each client thread closed its socket and reduced the active-client count correctly until it returned to zero, while the main server remained operational.
+
+The next stage is to implement username registration, presence management and the LIST command.

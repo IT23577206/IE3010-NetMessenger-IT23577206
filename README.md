@@ -64,3 +64,17 @@ The current implementation successfully:
 - Verifies the listening port using `ss -tlnp`
 
 The next stage is multi-client concurrency.
+
+### Stage 3 - Multi-Client Concurrency
+Completed.
+
+The server now:
+
+- Accepts new client connections continuously
+- Creates one POSIX thread per connected client
+- Supports at least five simultaneous clients
+- Uses a mutex to protect the shared active-client counter
+- Detects client disconnections
+- Cleans up client sockets without terminating the server
+
+The next development stage is username registration, presence management and the LIST command.

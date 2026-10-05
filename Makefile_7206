@@ -1,5 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Wpedantic -std=c11
+
+CFLAGS = -Wall -Wextra -Wpedantic -std=c11 -pthread
 
 SERVER = server_7206
 CLIENT = client_7206
