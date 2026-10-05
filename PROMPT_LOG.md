@@ -41,3 +41,17 @@ The server was updated to use POSIX threads so that each connected client is han
 
 **Evaluation / Changes Made:**
 The implementation was compiled and tested in CentOS. Five clients connected simultaneously to port 13206. The connections were verified using `ss -tnp`, and all clients were disconnected individually to confirm correct thread and socket cleanup.
+
+## Interaction 4
+
+**Date:** 05 October 2026
+**Tool:** ChatGPT
+
+**Prompt / Purpose:**
+Requested guidance for implementing REGISTER, unique username checking, LIST, registration-first enforcement and QUIT handling.
+
+**How the output was used:**
+The server was extended with a shared client table containing connection and username information. REGISTER and LIST were implemented according to the assignment protocol, with personalised NID responses.
+
+**Evaluation / Changes Made:**
+The implementation was compiled and tested using multiple clients. Duplicate usernames correctly returned `ERR 001 USERNAME_TAKEN NID:5772`, LIST before registration returned `ERR 005 REGISTER_REQUIRED NID:5772`, and QUIT removed the user from the active-user list.

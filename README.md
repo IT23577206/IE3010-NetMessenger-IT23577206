@@ -78,3 +78,18 @@ The server now:
 - Cleans up client sockets without terminating the server
 
 The next development stage is username registration, presence management and the LIST command.
+
+### Stage 4 - Registration and User Listing
+Completed.
+
+Implemented and tested:
+
+- `REGISTER <username>`
+- Unique username validation
+- `LIST`
+- Registration-first enforcement
+- `QUIT`
+- Removal of disconnected users from the active-user table
+- Personalised `NID:5772` appended to all OK and ERR responses
+
+The next stage is broadcast and private messaging.

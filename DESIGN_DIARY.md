@@ -53,3 +53,19 @@ The implementation was compiled using the `-pthread` option and tested with five
 Client disconnection was also tested. Each client thread closed its socket and reduced the active-client count correctly until it returned to zero, while the main server remained operational.
 
 The next stage is to implement username registration, presence management and the LIST command.
+
+## Entry 4 - User Registration and Presence List
+
+**Date:** 05 October 2026
+
+The NetMessenger protocol was extended with username registration, active-user tracking, the LIST command and clean QUIT handling.
+
+The server now stores connected clients in a shared client table containing the socket descriptor, registration state and username. Access to this shared table is protected using a mutex.
+
+REGISTER is enforced as the first command on a new connection. Usernames must be unique, and duplicate username attempts return `ERR 001 USERNAME_TAKEN NID:5772`.
+
+The LIST command returns the currently registered users as a comma-separated list followed by the personalised Node ID tag.
+
+Testing confirmed successful registration of multiple users, rejection of duplicate usernames, rejection of LIST before registration, and correct removal of a user from LIST after QUIT.
+
+The next stage is broadcast and private messaging.
