@@ -23,6 +23,8 @@
 #define BACKLOG 10
 #define MAX_CLIENTS 100
 #define MAX_USERNAME 32
+#define MAX_ROOM_NAME 32
+#define MAX_ROOMS 32
 #define MAX_LINE 1024
 
 typedef struct {
@@ -39,9 +41,22 @@ typedef struct {
 } Client;
 
 
+typedef struct {
+    int active;
+    char name[MAX_ROOM_NAME];
+    Client *members[MAX_CLIENTS];
+} Room;
+
+
 static Client *clients[MAX_CLIENTS];
 
 static pthread_mutex_t clients_mutex =
+    PTHREAD_MUTEX_INITIALIZER;
+
+
+static Room rooms[MAX_ROOMS];
+
+static pthread_mutex_t rooms_mutex =
     PTHREAD_MUTEX_INITIALIZER;
 
 
@@ -384,6 +399,352 @@ static int private_message(Client *sender,
 
 
 /*
+ * Find a room by name.
+ * Caller must already hold rooms_mutex.
+ */
+static int find_room_locked(const char *room_name)
+{
+    for (int i = 0; i < MAX_ROOMS; i++) {
+        if (rooms[i].active &&
+            strcmp(rooms[i].name, room_name) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+
+/*
+ * JOIN <room>
+ *
+ * Creates the room if it does not already exist
+ * and adds the client as a member.
+ */
+static int join_room(Client *client,
+                     const char *room_name)
+{
+    pthread_mutex_lock(&rooms_mutex);
+
+    int room_index =
+        find_room_locked(room_name);
+
+    if (room_index < 0) {
+
+        for (int i = 0; i < MAX_ROOMS; i++) {
+
+            if (!rooms[i].active) {
+
+                rooms[i].active = 1;
+
+                strncpy(rooms[i].name,
+                        room_name,
+                        MAX_ROOM_NAME - 1);
+
+                rooms[i].name[MAX_ROOM_NAME - 1] =
+                    '\0';
+
+                room_index = i;
+
+                break;
+            }
+        }
+    }
+
+
+    if (room_index < 0) {
+
+        pthread_mutex_unlock(&rooms_mutex);
+
+        return -1;
+    }
+
+
+    /*
+     * If already a member, treat JOIN as successful.
+     */
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        if (rooms[room_index].members[i] == client) {
+
+            pthread_mutex_unlock(&rooms_mutex);
+
+            return 0;
+        }
+    }
+
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        if (rooms[room_index].members[i] == NULL) {
+
+            rooms[room_index].members[i] =
+                client;
+
+            pthread_mutex_unlock(&rooms_mutex);
+
+            return 0;
+        }
+    }
+
+
+    pthread_mutex_unlock(&rooms_mutex);
+
+    return -1;
+}
+
+
+/*
+ * LEAVE <room>
+ *
+ * Returns:
+ *  0 = left successfully
+ * -1 = room not found
+ * -2 = user is not a member
+ */
+static int leave_room(Client *client,
+                      const char *room_name)
+{
+    pthread_mutex_lock(&rooms_mutex);
+
+    int room_index =
+        find_room_locked(room_name);
+
+    if (room_index < 0) {
+
+        pthread_mutex_unlock(&rooms_mutex);
+
+        return -1;
+    }
+
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        if (rooms[room_index].members[i] == client) {
+
+            rooms[room_index].members[i] = NULL;
+
+            /*
+             * Remove the room completely when the
+             * final member leaves.
+             */
+            int has_members = 0;
+
+            for (int j = 0; j < MAX_CLIENTS; j++) {
+
+                if (rooms[room_index].members[j] != NULL) {
+
+                    has_members = 1;
+
+                    break;
+                }
+            }
+
+            if (!has_members) {
+
+                memset(&rooms[room_index],
+                       0,
+                       sizeof(Room));
+            }
+
+            pthread_mutex_unlock(&rooms_mutex);
+
+            return 0;
+        }
+    }
+
+
+    pthread_mutex_unlock(&rooms_mutex);
+
+    return -2;
+}
+
+
+/*
+ * Remove a disconnecting client from every room.
+ */
+static void remove_client_from_rooms(Client *client)
+{
+    pthread_mutex_lock(&rooms_mutex);
+
+    for (int r = 0; r < MAX_ROOMS; r++) {
+
+        if (!rooms[r].active) {
+            continue;
+        }
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+
+            if (rooms[r].members[i] == client) {
+
+                rooms[r].members[i] = NULL;
+            }
+        }
+
+        /*
+         * If disconnecting the client made this room
+         * empty, remove the room.
+         */
+        int has_members = 0;
+
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+
+            if (rooms[r].members[i] != NULL) {
+
+                has_members = 1;
+
+                break;
+            }
+        }
+
+        if (!has_members) {
+
+            memset(&rooms[r],
+                   0,
+                   sizeof(Room));
+        }
+    }
+
+    pthread_mutex_unlock(&rooms_mutex);
+}
+
+
+/*
+ * ROOMS
+ *
+ * Sends all currently created room names.
+ */
+static void send_room_list(Client *client)
+{
+    char response[MAX_LINE];
+
+    strcpy(response, "OK ROOMS ");
+
+    pthread_mutex_lock(&rooms_mutex);
+
+    int first = 1;
+
+    for (int i = 0; i < MAX_ROOMS; i++) {
+
+        if (rooms[i].active) {
+
+            if (!first) {
+
+                strncat(response,
+                        ",",
+                        sizeof(response) -
+                        strlen(response) - 1);
+            }
+
+            strncat(response,
+                    rooms[i].name,
+                    sizeof(response) -
+                    strlen(response) - 1);
+
+            first = 0;
+        }
+    }
+
+    pthread_mutex_unlock(&rooms_mutex);
+
+
+    strncat(response,
+            " NID:5772\n",
+            sizeof(response) -
+            strlen(response) - 1);
+
+
+    send_to_client(client,
+                   response);
+}
+
+
+/*
+ * RMSG <room> <message>
+ *
+ * Returns:
+ *  0 = delivered
+ * -1 = room does not exist
+ * -2 = sender is not a member
+ */
+static int room_message(Client *sender,
+                        const char *room_name,
+                        const char *message)
+{
+    char forwarded[MAX_LINE];
+
+
+    snprintf(forwarded,
+             sizeof(forwarded),
+             "MSG ROOM %s %s %s\n",
+             room_name,
+             sender->username,
+             message);
+
+
+    pthread_mutex_lock(&rooms_mutex);
+
+
+    int room_index =
+        find_room_locked(room_name);
+
+
+    if (room_index < 0) {
+
+        pthread_mutex_unlock(&rooms_mutex);
+
+        return -1;
+    }
+
+
+    int sender_is_member = 0;
+
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        if (rooms[room_index].members[i] == sender) {
+
+            sender_is_member = 1;
+
+            break;
+        }
+    }
+
+
+    if (!sender_is_member) {
+
+        pthread_mutex_unlock(&rooms_mutex);
+
+        return -2;
+    }
+
+
+    /*
+     * Deliver only to other members of this room.
+     */
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        Client *member =
+            rooms[room_index].members[i];
+
+
+        if (member != NULL &&
+            member != sender &&
+            member->registered) {
+
+            send_to_client(member,
+                           forwarded);
+        }
+    }
+
+
+    pthread_mutex_unlock(&rooms_mutex);
+
+    return 0;
+}
+
+
+/*
  * Handle one client connection.
  */
 static void *handle_client(void *arg)
@@ -622,6 +983,217 @@ static void *handle_client(void *arg)
 
 
         /*
+         * JOIN <room>
+         */
+        if (strncmp(line,
+                    "JOIN ",
+                    5) == 0) {
+
+            const char *room_name =
+                line + 5;
+
+
+            if (*room_name == '\0' ||
+                strlen(room_name) >= MAX_ROOM_NAME ||
+                strchr(room_name, ' ') != NULL) {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                continue;
+            }
+
+
+            if (join_room(client,
+                          room_name) < 0) {
+
+                send_to_client(
+                    client,
+                    "ERR 009 ROOM_LIMIT_REACHED NID:5772\n");
+
+                continue;
+            }
+
+
+            char response[MAX_LINE];
+
+
+            snprintf(response,
+                     sizeof(response),
+                     "OK JOINED %s NID:5772\n",
+                     room_name);
+
+
+            send_to_client(client,
+                           response);
+
+
+            printf("[JOIN] %s -> %s\n",
+                   client->username,
+                   room_name);
+
+            continue;
+        }
+
+
+        /*
+         * LEAVE <room>
+         */
+        if (strncmp(line,
+                    "LEAVE ",
+                    6) == 0) {
+
+            const char *room_name =
+                line + 6;
+
+
+            int result =
+                leave_room(client,
+                           room_name);
+
+
+            if (result == -1) {
+
+                send_to_client(
+                    client,
+                    "ERR 003 ROOM_NOT_FOUND NID:5772\n");
+
+                continue;
+            }
+
+
+            if (result == -2) {
+
+                send_to_client(
+                    client,
+                    "ERR 004 NOT_IN_ROOM NID:5772\n");
+
+                continue;
+            }
+
+
+            char response[MAX_LINE];
+
+
+            snprintf(response,
+                     sizeof(response),
+                     "OK LEFT %s NID:5772\n",
+                     room_name);
+
+
+            send_to_client(client,
+                           response);
+
+
+            printf("[LEAVE] %s <- %s\n",
+                   client->username,
+                   room_name);
+
+            continue;
+        }
+
+
+        /*
+         * ROOMS
+         */
+        if (strcmp(line,
+                   "ROOMS") == 0) {
+
+            send_room_list(client);
+
+            continue;
+        }
+
+
+        /*
+         * RMSG <room> <message>
+         */
+        if (strncmp(line,
+                    "RMSG ",
+                    5) == 0) {
+
+            char *arguments =
+                line + 5;
+
+
+            char *space =
+                strchr(arguments,
+                       ' ');
+
+
+            if (space == NULL) {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                continue;
+            }
+
+
+            *space = '\0';
+
+
+            const char *room_name =
+                arguments;
+
+            const char *message =
+                space + 1;
+
+
+            if (*room_name == '\0' ||
+                *message == '\0') {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                continue;
+            }
+
+
+            int result =
+                room_message(client,
+                             room_name,
+                             message);
+
+
+            if (result == -1) {
+
+                send_to_client(
+                    client,
+                    "ERR 003 ROOM_NOT_FOUND NID:5772\n");
+
+                continue;
+            }
+
+
+            if (result == -2) {
+
+                send_to_client(
+                    client,
+                    "ERR 004 NOT_IN_ROOM NID:5772\n");
+
+                continue;
+            }
+
+
+            send_to_client(
+                client,
+                "OK SENT NID:5772\n");
+
+
+            printf("[RMSG] %s -> %s: %s\n",
+                   client->username,
+                   room_name,
+                   message);
+
+            continue;
+        }
+
+
+        /*
          * QUIT
          */
         if (strcmp(line,
@@ -656,6 +1228,8 @@ static void *handle_client(void *arg)
             "[-] Unregistered client disconnected.\n");
     }
 
+
+    remove_client_from_rooms(client);
 
     remove_client(client);
 

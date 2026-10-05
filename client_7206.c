@@ -250,6 +250,10 @@ int main(void)
     printf("LIST\n");
     printf("BCAST <message>\n");
     printf("PMSG <username> <message>\n");
+    printf("JOIN <room>\n");
+    printf("LEAVE <room>\n");
+    printf("ROOMS\n");
+    printf("RMSG <room> <message>\n");
     printf("QUIT\n");
 
 

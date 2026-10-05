@@ -69,3 +69,17 @@ The server was extended with BCAST and PMSG handling. The client was upgraded wi
 
 **Evaluation / Changes Made:**
 The implementation was compiled and tested with multiple registered clients. Broadcast messages were delivered to all other clients, private messages were delivered only to the intended user, and unknown targets correctly returned `ERR 002 USER_NOT_FOUND NID:5772`. Existing REGISTER and LIST behaviour was also retested successfully.
+
+## Interaction 6
+
+**Date:** 05 October 2026
+**Tool:** ChatGPT
+
+**Prompt / Purpose:**
+Requested step-by-step guidance for implementing room creation, membership tracking, room listing, room messaging and empty-room cleanup.
+
+**How the output was used:**
+The server was extended with room data structures and handlers for JOIN, LEAVE, ROOMS and RMSG. The client command menu was also updated with the new room commands.
+
+**Evaluation / Changes Made:**
+The implementation was compiled and tested with multiple clients. Users successfully joined different rooms, messages were delivered only to room members, non-members were rejected, unknown rooms returned an error, users could leave and rejoin rooms, and empty rooms were automatically removed. Existing LIST and PMSG functionality was retested successfully.

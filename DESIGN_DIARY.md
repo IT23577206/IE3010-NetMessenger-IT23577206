@@ -87,3 +87,23 @@ Each server-side client structure also contains a send mutex so concurrent serve
 Testing confirmed broadcast delivery to multiple clients, private messaging in both directions, correct unknown-user handling, and preservation of the existing LIST functionality.
 
 The next stage is room creation, room membership and room messaging.
+
+## Entry 6 - Room Management and Room Messaging
+
+**Date:** 05 October 2026
+
+Room functionality was added to the NetMessenger server.
+
+The server now supports `JOIN <room>`, `LEAVE <room>`, `ROOMS` and `RMSG <room> <message>`.
+
+Rooms are stored in a shared room table containing the room name and a list of member client pointers. Access to room data is protected using a mutex because multiple client threads may join, leave or send room messages concurrently.
+
+The JOIN command creates a room automatically when it does not already exist and adds the requesting user as a member. LEAVE removes the user from the room, and empty rooms are automatically deleted.
+
+The ROOMS command lists all currently active rooms. RMSG forwards a room message only to other members of the specified room.
+
+Testing confirmed successful room creation, room listing, room-only message delivery, rejection of messages from non-members, rejection of unknown rooms, successful leave and rejoin behaviour, and automatic removal of empty rooms.
+
+Existing LIST and private messaging functionality were also retested successfully after the room implementation.
+
+The next stage is TCP file sharing.

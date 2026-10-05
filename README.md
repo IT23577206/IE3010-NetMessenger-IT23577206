@@ -109,3 +109,23 @@ Implemented and tested:
 - Broadcast delivery to multiple connected users
 
 The next stage is room management and room messaging.
+
+### Stage 6 - Room Management and Room Messaging
+Completed.
+
+Implemented and tested:
+
+- `JOIN <room>`
+- Automatic room creation
+- `LEAVE <room>`
+- `ROOMS`
+- `RMSG <room> <message>`
+- `MSG ROOM <room> <sender> <message>` forwarding
+- Room membership validation
+- Unknown-room error handling
+- Non-member message rejection
+- Rejoining rooms
+- Automatic removal of empty rooms
+- Cleanup of room membership when a client disconnects
+
+The next development stage is TCP file sharing.
