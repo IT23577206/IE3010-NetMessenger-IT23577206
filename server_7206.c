@@ -6,8 +6,8 @@
  * Personalised Port: 13206
  * Node ID: NID:5772
  *
- * Stage 4:
- * Multi-client concurrency, REGISTER, LIST and QUIT.
+ * Stage 5:
+ * REGISTER, LIST, BCAST, PMSG and QUIT.
  */
 
 #include <stdio.h>
@@ -29,11 +29,16 @@ typedef struct {
     int socket_fd;
     int registered;
     char username[MAX_USERNAME];
+
+    /*
+     * Protects writes to this client's socket.
+     * Several server threads may send data to the
+     * same client at the same time.
+     */
+    pthread_mutex_t send_mutex;
 } Client;
 
-/*
- * Shared connected-client table.
- */
+
 static Client *clients[MAX_CLIENTS];
 
 static pthread_mutex_t clients_mutex =
@@ -41,19 +46,21 @@ static pthread_mutex_t clients_mutex =
 
 
 /*
- * Send an entire text response reliably.
+ * Reliably send an entire buffer.
  */
-static int send_all(int socket_fd, const char *message)
+static int send_all(int socket_fd,
+                    const char *message)
 {
     size_t total = 0;
     size_t length = strlen(message);
 
     while (total < length) {
 
-        ssize_t sent = send(socket_fd,
-                            message + total,
-                            length - total,
-                            0);
+        ssize_t sent =
+            send(socket_fd,
+                 message + total,
+                 length - total,
+                 0);
 
         if (sent <= 0) {
             return -1;
@@ -67,11 +74,27 @@ static int send_all(int socket_fd, const char *message)
 
 
 /*
- * Read exactly one newline-terminated protocol line.
- *
- * Reading one byte at a time is simple and ensures
- * that bytes belonging to the next command are not
- * accidentally consumed.
+ * Serialise messages sent to a particular client.
+ */
+static int send_to_client(Client *client,
+                          const char *message)
+{
+    int result;
+
+    pthread_mutex_lock(&client->send_mutex);
+
+    result =
+        send_all(client->socket_fd,
+                 message);
+
+    pthread_mutex_unlock(&client->send_mutex);
+
+    return result;
+}
+
+
+/*
+ * Read one newline-terminated protocol line.
  */
 static ssize_t recv_line(int socket_fd,
                          char *buffer,
@@ -88,7 +111,10 @@ static ssize_t recv_line(int socket_fd,
         char ch;
 
         ssize_t received =
-            recv(socket_fd, &ch, 1, 0);
+            recv(socket_fd,
+                 &ch,
+                 1,
+                 0);
 
         if (received == 0) {
             return 0;
@@ -99,11 +125,14 @@ static ssize_t recv_line(int socket_fd,
         }
 
         if (ch == '\n') {
+
             buffer[index] = '\0';
+
             return (ssize_t)index;
         }
 
         if (ch != '\r') {
+
             buffer[index++] = ch;
         }
     }
@@ -115,7 +144,7 @@ static ssize_t recv_line(int socket_fd,
 
 
 /*
- * Add a newly connected client to the shared table.
+ * Add a connected client to the shared table.
  */
 static int add_client(Client *client)
 {
@@ -123,7 +152,9 @@ static int add_client(Client *client)
 
     pthread_mutex_lock(&clients_mutex);
 
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0;
+         i < MAX_CLIENTS;
+         i++) {
 
         if (clients[i] == NULL) {
 
@@ -148,7 +179,9 @@ static void remove_client(Client *client)
 {
     pthread_mutex_lock(&clients_mutex);
 
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0;
+         i < MAX_CLIENTS;
+         i++) {
 
         if (clients[i] == client) {
 
@@ -163,11 +196,7 @@ static void remove_client(Client *client)
 
 
 /*
- * Register a username atomically.
- *
- * Returns:
- *  0  success
- * -1  username already exists
+ * Register a unique username.
  */
 static int register_username(Client *client,
                              const char *username)
@@ -176,11 +205,9 @@ static int register_username(Client *client,
 
     pthread_mutex_lock(&clients_mutex);
 
-    /*
-     * Check whether another registered client
-     * already owns this username.
-     */
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0;
+         i < MAX_CLIENTS;
+         i++) {
 
         if (clients[i] != NULL &&
             clients[i]->registered &&
@@ -193,9 +220,6 @@ static int register_username(Client *client,
         }
     }
 
-    /*
-     * Only assign the username if it is unique.
-     */
     if (result == 0) {
 
         strncpy(client->username,
@@ -215,9 +239,7 @@ static int register_username(Client *client,
 
 
 /*
- * Build:
- *
- * OK USERS user1,user2,user3 NID:5772
+ * Send the currently registered users.
  */
 static void send_user_list(Client *client)
 {
@@ -229,22 +251,27 @@ static void send_user_list(Client *client)
 
     int first = 1;
 
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0;
+         i < MAX_CLIENTS;
+         i++) {
 
         if (clients[i] != NULL &&
             clients[i]->registered) {
 
             if (!first) {
-                strncat(response,
-                        ",",
-                        sizeof(response) -
-                        strlen(response) - 1);
-            }
 
-            strncat(response,
-                    clients[i]->username,
+                strncat(
+                    response,
+                    ",",
                     sizeof(response) -
                     strlen(response) - 1);
+            }
+
+            strncat(
+                response,
+                clients[i]->username,
+                sizeof(response) -
+                strlen(response) - 1);
 
             first = 0;
         }
@@ -252,23 +279,120 @@ static void send_user_list(Client *client)
 
     pthread_mutex_unlock(&clients_mutex);
 
-    strncat(response,
-            " NID:5772\n",
-            sizeof(response) -
-            strlen(response) - 1);
+    strncat(
+        response,
+        " NID:5772\n",
+        sizeof(response) -
+        strlen(response) - 1);
 
-    send_all(client->socket_fd, response);
+    send_to_client(client,
+                   response);
 }
 
 
 /*
- * Process one connected client.
+ * Broadcast a message to every registered client
+ * except the sender.
+ *
+ * Protocol:
+ * MSG BCAST <sender> <message>
+ */
+static void broadcast_message(Client *sender,
+                              const char *message)
+{
+    char forwarded[MAX_LINE];
+
+    snprintf(
+        forwarded,
+        sizeof(forwarded),
+        "MSG BCAST %s %s\n",
+        sender->username,
+        message);
+
+
+    pthread_mutex_lock(&clients_mutex);
+
+    for (int i = 0;
+         i < MAX_CLIENTS;
+         i++) {
+
+        if (clients[i] != NULL &&
+            clients[i]->registered &&
+            clients[i] != sender) {
+
+            send_to_client(
+                clients[i],
+                forwarded);
+        }
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+
+/*
+ * Private message.
+ *
+ * Returns:
+ *  0 = delivered
+ * -1 = target not found
+ */
+static int private_message(Client *sender,
+                           const char *target,
+                           const char *message)
+{
+    char forwarded[MAX_LINE];
+
+    int result = -1;
+
+
+    snprintf(
+        forwarded,
+        sizeof(forwarded),
+        "MSG PRIV %s %s\n",
+        sender->username,
+        message);
+
+
+    pthread_mutex_lock(&clients_mutex);
+
+
+    for (int i = 0;
+         i < MAX_CLIENTS;
+         i++) {
+
+        if (clients[i] != NULL &&
+            clients[i]->registered &&
+            strcmp(clients[i]->username,
+                   target) == 0) {
+
+            send_to_client(
+                clients[i],
+                forwarded);
+
+            result = 0;
+
+            break;
+        }
+    }
+
+
+    pthread_mutex_unlock(&clients_mutex);
+
+    return result;
+}
+
+
+/*
+ * Handle one client connection.
  */
 static void *handle_client(void *arg)
 {
-    Client *client = (Client *)arg;
+    Client *client =
+        (Client *)arg;
 
     char line[MAX_LINE];
+
 
     printf("[+] TCP client connected.\n");
 
@@ -276,17 +400,16 @@ static void *handle_client(void *arg)
     while (1) {
 
         ssize_t length =
-            recv_line(client->socket_fd,
-                      line,
-                      sizeof(line));
+            recv_line(
+                client->socket_fd,
+                line,
+                sizeof(line));
+
 
         if (length == 0) {
-
-            /*
-             * Client disconnected.
-             */
             break;
         }
+
 
         if (length < 0) {
 
@@ -295,26 +418,28 @@ static void *handle_client(void *arg)
             break;
         }
 
-        printf("[RECEIVED] %s\n", line);
+
+        printf("[RECEIVED from %s] %s\n",
+               client->registered
+                   ? client->username
+                   : "unregistered",
+               line);
 
 
         /*
-         * REGISTER must occur before any other
-         * command is accepted.
+         * REGISTER must be the first command.
          */
         if (!client->registered) {
 
-            if (strncmp(line,
-                        "REGISTER ",
-                        9) != 0) {
+            if (strncmp(
+                    line,
+                    "REGISTER ",
+                    9) != 0) {
 
-                send_all(
-                    client->socket_fd,
+                send_to_client(
+                    client,
                     "ERR 005 REGISTER_REQUIRED NID:5772\n");
 
-                /*
-                 * Enforce REGISTER as first command.
-                 */
                 break;
             }
 
@@ -323,26 +448,24 @@ static void *handle_client(void *arg)
                 line + 9;
 
 
-            /*
-             * Validate username.
-             */
             if (strlen(username) == 0 ||
                 strlen(username) >= MAX_USERNAME ||
                 strchr(username, ' ') != NULL) {
 
-                send_all(
-                    client->socket_fd,
+                send_to_client(
+                    client,
                     "ERR 006 INVALID_USERNAME NID:5772\n");
 
                 continue;
             }
 
 
-            if (register_username(client,
-                                  username) < 0) {
+            if (register_username(
+                    client,
+                    username) < 0) {
 
-                send_all(
-                    client->socket_fd,
+                send_to_client(
+                    client,
                     "ERR 001 USERNAME_TAKEN NID:5772\n");
 
                 continue;
@@ -351,13 +474,17 @@ static void *handle_client(void *arg)
 
             char response[MAX_LINE];
 
-            snprintf(response,
-                     sizeof(response),
-                     "OK REGISTERED %s NID:5772\n",
-                     client->username);
 
-            send_all(client->socket_fd,
-                     response);
+            snprintf(
+                response,
+                sizeof(response),
+                "OK REGISTERED %s NID:5772\n",
+                client->username);
+
+
+            send_to_client(
+                client,
+                response);
 
 
             printf("[REGISTERED] %s\n",
@@ -368,9 +495,10 @@ static void *handle_client(void *arg)
 
 
         /*
-         * LIST command.
+         * LIST
          */
-        if (strcmp(line, "LIST") == 0) {
+        if (strcmp(line,
+                   "LIST") == 0) {
 
             send_user_list(client);
 
@@ -379,12 +507,128 @@ static void *handle_client(void *arg)
 
 
         /*
-         * QUIT command.
+         * BCAST <message>
          */
-        if (strcmp(line, "QUIT") == 0) {
+        if (strncmp(
+                line,
+                "BCAST ",
+                6) == 0) {
 
-            send_all(
-                client->socket_fd,
+            const char *message =
+                line + 6;
+
+
+            if (*message == '\0') {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                continue;
+            }
+
+
+            broadcast_message(
+                client,
+                message);
+
+
+            send_to_client(
+                client,
+                "OK SENT NID:5772\n");
+
+
+            printf("[BCAST] %s: %s\n",
+                   client->username,
+                   message);
+
+            continue;
+        }
+
+
+        /*
+         * PMSG <username> <message>
+         */
+        if (strncmp(
+                line,
+                "PMSG ",
+                5) == 0) {
+
+            char *arguments =
+                line + 5;
+
+
+            char *space =
+                strchr(arguments,
+                       ' ');
+
+
+            if (space == NULL) {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                continue;
+            }
+
+
+            *space = '\0';
+
+
+            const char *target =
+                arguments;
+
+            const char *message =
+                space + 1;
+
+
+            if (*target == '\0' ||
+                *message == '\0') {
+
+                send_to_client(
+                    client,
+                    "ERR 007 INVALID_COMMAND NID:5772\n");
+
+                continue;
+            }
+
+
+            if (private_message(
+                    client,
+                    target,
+                    message) < 0) {
+
+                send_to_client(
+                    client,
+                    "ERR 002 USER_NOT_FOUND NID:5772\n");
+
+                continue;
+            }
+
+
+            send_to_client(
+                client,
+                "OK SENT NID:5772\n");
+
+
+            printf("[PMSG] %s -> %s: %s\n",
+                   client->username,
+                   target,
+                   message);
+
+            continue;
+        }
+
+
+        /*
+         * QUIT
+         */
+        if (strcmp(line,
+                   "QUIT") == 0) {
+
+            send_to_client(
+                client,
                 "OK BYE NID:5772\n");
 
             break;
@@ -392,28 +636,33 @@ static void *handle_client(void *arg)
 
 
         /*
-         * Commands not implemented yet.
+         * Unknown or not-yet-implemented command.
          */
-        send_all(
-            client->socket_fd,
+        send_to_client(
+            client,
             "ERR 007 INVALID_COMMAND NID:5772\n");
     }
 
 
     if (client->registered) {
 
-        printf("[-] User disconnected: %s\n",
-               client->username);
+        printf(
+            "[-] User disconnected: %s\n",
+            client->username);
     }
     else {
 
-        printf("[-] Unregistered client disconnected.\n");
+        printf(
+            "[-] Unregistered client disconnected.\n");
     }
 
 
     remove_client(client);
 
     close(client->socket_fd);
+
+    pthread_mutex_destroy(
+        &client->send_mutex);
 
     free(client);
 
@@ -428,15 +677,16 @@ int main(void)
     struct sockaddr_in server_address;
 
 
-    /*
-     * Prevent the process from terminating if a
-     * disconnected client causes SIGPIPE.
-     */
-    signal(SIGPIPE, SIG_IGN);
+    signal(SIGPIPE,
+           SIG_IGN);
 
 
     server_socket =
-        socket(AF_INET, SOCK_STREAM, 0);
+        socket(
+            AF_INET,
+            SOCK_STREAM,
+            0);
+
 
     if (server_socket < 0) {
 
@@ -448,11 +698,13 @@ int main(void)
 
     int option = 1;
 
-    if (setsockopt(server_socket,
-                   SOL_SOCKET,
-                   SO_REUSEADDR,
-                   &option,
-                   sizeof(option)) < 0) {
+
+    if (setsockopt(
+            server_socket,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &option,
+            sizeof(option)) < 0) {
 
         perror("setsockopt");
 
@@ -462,23 +714,29 @@ int main(void)
     }
 
 
-    memset(&server_address,
-           0,
-           sizeof(server_address));
+    memset(
+        &server_address,
+        0,
+        sizeof(server_address));
+
 
     server_address.sin_family =
         AF_INET;
 
+
     server_address.sin_addr.s_addr =
         htonl(INADDR_ANY);
+
 
     server_address.sin_port =
         htons(PORT);
 
 
-    if (bind(server_socket,
-             (struct sockaddr *)&server_address,
-             sizeof(server_address)) < 0) {
+    if (bind(
+            server_socket,
+            (struct sockaddr *)
+                &server_address,
+            sizeof(server_address)) < 0) {
 
         perror("bind");
 
@@ -488,8 +746,9 @@ int main(void)
     }
 
 
-    if (listen(server_socket,
-               BACKLOG) < 0) {
+    if (listen(
+            server_socket,
+            BACKLOG) < 0) {
 
         perror("listen");
 
@@ -507,21 +766,27 @@ int main(void)
     printf(" Concurrency         : POSIX Threads\n");
     printf("============================================\n");
 
-    printf("Server is waiting for clients...\n");
+    printf(
+        "Server is waiting for clients...\n");
 
 
     while (1) {
 
-        struct sockaddr_in client_address;
+        struct sockaddr_in
+            client_address;
+
 
         socklen_t client_length =
             sizeof(client_address);
 
 
         int client_socket =
-            accept(server_socket,
-                   (struct sockaddr *)&client_address,
-                   &client_length);
+            accept(
+                server_socket,
+                (struct sockaddr *)
+                    &client_address,
+                &client_length);
+
 
         if (client_socket < 0) {
 
@@ -531,13 +796,19 @@ int main(void)
         }
 
 
-        printf("Connection from %s:%d\n",
-               inet_ntoa(client_address.sin_addr),
-               ntohs(client_address.sin_port));
+        printf(
+            "Connection from %s:%d\n",
+            inet_ntoa(
+                client_address.sin_addr),
+            ntohs(
+                client_address.sin_port));
 
 
         Client *client =
-            calloc(1, sizeof(Client));
+            calloc(
+                1,
+                sizeof(Client));
+
 
         if (client == NULL) {
 
@@ -552,17 +823,26 @@ int main(void)
         client->socket_fd =
             client_socket;
 
+
         client->registered =
             0;
 
 
+        pthread_mutex_init(
+            &client->send_mutex,
+            NULL);
+
+
         if (add_client(client) < 0) {
 
-            send_all(
-                client_socket,
+            send_to_client(
+                client,
                 "ERR 008 SERVER_FULL NID:5772\n");
 
             close(client_socket);
+
+            pthread_mutex_destroy(
+                &client->send_mutex);
 
             free(client);
 
@@ -573,10 +853,11 @@ int main(void)
         pthread_t thread_id;
 
 
-        if (pthread_create(&thread_id,
-                           NULL,
-                           handle_client,
-                           client) != 0) {
+        if (pthread_create(
+                &thread_id,
+                NULL,
+                handle_client,
+                client) != 0) {
 
             perror("pthread_create");
 
@@ -584,13 +865,17 @@ int main(void)
 
             close(client_socket);
 
+            pthread_mutex_destroy(
+                &client->send_mutex);
+
             free(client);
 
             continue;
         }
 
 
-        pthread_detach(thread_id);
+        pthread_detach(
+            thread_id);
     }
 
 

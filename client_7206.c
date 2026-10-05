@@ -5,15 +5,17 @@
  * Registration Number: IT23577206
  * Server Port: 13206
  *
- * Stage 4:
- * Interactive REGISTER, LIST and QUIT testing.
+ * Stage 5:
+ * Interactive client with asynchronous receiver thread.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <sys/socket.h>
 
 #define SERVER_IP "127.0.0.1"
@@ -21,6 +23,12 @@
 #define MAX_LINE 1024
 
 
+static volatile sig_atomic_t running = 1;
+
+
+/*
+ * Send an entire protocol line.
+ */
 static int send_all(int socket_fd,
                     const char *message)
 {
@@ -46,6 +54,9 @@ static int send_all(int socket_fd,
 }
 
 
+/*
+ * Read one newline-terminated server line.
+ */
 static ssize_t recv_line(int socket_fd,
                          char *buffer,
                          size_t size)
@@ -89,18 +100,76 @@ static ssize_t recv_line(int socket_fd,
 }
 
 
+/*
+ * Continuously receives responses and forwarded
+ * messages from the server.
+ */
+static void *receiver_thread(void *arg)
+{
+    int socket_fd =
+        *((int *)arg);
+
+    char response[MAX_LINE];
+
+
+    while (running) {
+
+        ssize_t length =
+            recv_line(
+                socket_fd,
+                response,
+                sizeof(response));
+
+
+        if (length <= 0) {
+
+            running = 0;
+
+            break;
+        }
+
+
+        printf("\n%s\n", response);
+
+        fflush(stdout);
+
+
+        if (strncmp(
+                response,
+                "OK BYE ",
+                7) == 0) {
+
+            running = 0;
+
+            break;
+        }
+    }
+
+
+    return NULL;
+}
+
+
 int main(void)
 {
     int client_socket;
 
-    struct sockaddr_in server_address;
+    struct sockaddr_in
+        server_address;
 
     char input[MAX_LINE];
-    char response[MAX_LINE];
+
+
+    signal(SIGPIPE,
+           SIG_IGN);
 
 
     client_socket =
-        socket(AF_INET, SOCK_STREAM, 0);
+        socket(
+            AF_INET,
+            SOCK_STREAM,
+            0);
+
 
     if (client_socket < 0) {
 
@@ -110,23 +179,28 @@ int main(void)
     }
 
 
-    memset(&server_address,
-           0,
-           sizeof(server_address));
+    memset(
+        &server_address,
+        0,
+        sizeof(server_address));
+
 
     server_address.sin_family =
         AF_INET;
+
 
     server_address.sin_port =
         htons(PORT);
 
 
-    if (inet_pton(AF_INET,
-                  SERVER_IP,
-                  &server_address.sin_addr) <= 0) {
+    if (inet_pton(
+            AF_INET,
+            SERVER_IP,
+            &server_address.sin_addr) <= 0) {
 
-        fprintf(stderr,
-                "Invalid server address.\n");
+        fprintf(
+            stderr,
+            "Invalid server address.\n");
 
         close(client_socket);
 
@@ -134,14 +208,17 @@ int main(void)
     }
 
 
-    printf("Connecting to %s:%d...\n",
-           SERVER_IP,
-           PORT);
+    printf(
+        "Connecting to %s:%d...\n",
+        SERVER_IP,
+        PORT);
 
 
-    if (connect(client_socket,
-                (struct sockaddr *)&server_address,
-                sizeof(server_address)) < 0) {
+    if (connect(
+            client_socket,
+            (struct sockaddr *)
+                &server_address,
+            sizeof(server_address)) < 0) {
 
         perror("connect");
 
@@ -157,75 +234,106 @@ int main(void)
     printf(" Server Port         : %d\n", PORT);
     printf("============================================\n");
 
-    printf("Connected successfully.\n");
-    printf("\n");
+    printf(
+        "Connected successfully.\n\n");
 
-    printf("First command must be:\n");
-    printf("REGISTER <username>\n");
 
-    printf("\nAvailable Stage 4 commands:\n");
+    printf(
+        "First command must be:\n");
+
+    printf(
+        "REGISTER <username>\n\n");
+
+
+    printf("Available commands:\n");
     printf("REGISTER <username>\n");
     printf("LIST\n");
+    printf("BCAST <message>\n");
+    printf("PMSG <username> <message>\n");
     printf("QUIT\n");
 
 
-    while (1) {
+    pthread_t receiver;
+
+
+    if (pthread_create(
+            &receiver,
+            NULL,
+            receiver_thread,
+            &client_socket) != 0) {
+
+        perror("pthread_create");
+
+        close(client_socket);
+
+        return EXIT_FAILURE;
+    }
+
+
+    while (running) {
 
         printf("\n> ");
 
         fflush(stdout);
 
 
-        if (fgets(input,
-                  sizeof(input),
-                  stdin) == NULL) {
+        if (fgets(
+                input,
+                sizeof(input),
+                stdin) == NULL) {
+
+            running = 0;
+
+            shutdown(
+                client_socket,
+                SHUT_RDWR);
+
+            break;
+        }
+
+
+        if (!running) {
+            break;
+        }
+
+
+        if (send_all(
+                client_socket,
+                input) < 0) {
+
+            printf(
+                "Connection lost.\n");
+
+            running = 0;
 
             break;
         }
 
 
         /*
-         * fgets() already includes the newline
-         * required by the protocol.
+         * After QUIT the receiver thread waits for
+         * OK BYE and the server closes the socket.
          */
-        if (send_all(client_socket,
-                     input) < 0) {
-
-            printf("Connection lost.\n");
-
-            break;
-        }
-
-
-        ssize_t length =
-            recv_line(client_socket,
-                      response,
-                      sizeof(response));
-
-
-        if (length <= 0) {
-
-            printf("Server closed the connection.\n");
-
-            break;
-        }
-
-
-        printf("%s\n", response);
-
-
-        if (strncmp(response,
-                    "OK BYE ",
-                    7) == 0) {
+        if (strcmp(
+                input,
+                "QUIT\n") == 0) {
 
             break;
         }
     }
 
 
+    pthread_join(
+        receiver,
+        NULL);
+
+
     close(client_socket);
 
-    printf("Client closed.\n");
+
+    printf(
+        "Client closed.\n");
+
 
     return EXIT_SUCCESS;
 }

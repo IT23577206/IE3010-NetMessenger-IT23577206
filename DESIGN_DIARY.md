@@ -69,3 +69,21 @@ The LIST command returns the currently registered users as a comma-separated lis
 Testing confirmed successful registration of multiple users, rejection of duplicate usernames, rejection of LIST before registration, and correct removal of a user from LIST after QUIT.
 
 The next stage is broadcast and private messaging.
+
+## Entry 5 - Broadcast and Private Messaging
+
+**Date:** 05 October 2026
+
+Broadcast and private messaging were added to the NetMessenger protocol.
+
+The BCAST command forwards a message to every registered client except the sender using the required format `MSG BCAST <sender> <message>`. The sender receives `OK SENT NID:5772`.
+
+The PMSG command sends a message only to the specified registered user using the required format `MSG PRIV <sender> <message>`. If the target username does not exist, the server returns `ERR 002 USER_NOT_FOUND NID:5772`.
+
+The client was upgraded with a dedicated receiver thread so that incoming messages can be displayed asynchronously while the main thread continues accepting keyboard input.
+
+Each server-side client structure also contains a send mutex so concurrent server threads cannot interleave messages written to the same client socket.
+
+Testing confirmed broadcast delivery to multiple clients, private messaging in both directions, correct unknown-user handling, and preservation of the existing LIST functionality.
+
+The next stage is room creation, room membership and room messaging.

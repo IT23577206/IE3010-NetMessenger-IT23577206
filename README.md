@@ -93,3 +93,19 @@ Implemented and tested:
 - Personalised `NID:5772` appended to all OK and ERR responses
 
 The next stage is broadcast and private messaging.
+
+### Stage 5 - Broadcast and Private Messaging
+Completed.
+
+Implemented and tested:
+
+- `BCAST <message>`
+- `MSG BCAST <sender> <message>` forwarding
+- `PMSG <username> <message>`
+- `MSG PRIV <sender> <message>` forwarding
+- `ERR 002 USER_NOT_FOUND NID:5772`
+- Asynchronous client receiver thread
+- Per-client send mutex for safe concurrent socket writes
+- Broadcast delivery to multiple connected users
+
+The next stage is room management and room messaging.

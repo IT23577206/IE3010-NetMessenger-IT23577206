@@ -55,3 +55,17 @@ The server was extended with a shared client table containing connection and use
 
 **Evaluation / Changes Made:**
 The implementation was compiled and tested using multiple clients. Duplicate usernames correctly returned `ERR 001 USERNAME_TAKEN NID:5772`, LIST before registration returned `ERR 005 REGISTER_REQUIRED NID:5772`, and QUIT removed the user from the active-user list.
+
+## Interaction 5
+
+**Date:** 05 October 2026
+**Tool:** ChatGPT
+
+**Prompt / Purpose:**
+Requested guidance for implementing broadcast messaging, private messaging and asynchronous message reception.
+
+**How the output was used:**
+The server was extended with BCAST and PMSG handling. The client was upgraded with a receiver thread so that forwarded messages can arrive while the user is typing commands.
+
+**Evaluation / Changes Made:**
+The implementation was compiled and tested with multiple registered clients. Broadcast messages were delivered to all other clients, private messages were delivered only to the intended user, and unknown targets correctly returned `ERR 002 USER_NOT_FOUND NID:5772`. Existing REGISTER and LIST behaviour was also retested successfully.
