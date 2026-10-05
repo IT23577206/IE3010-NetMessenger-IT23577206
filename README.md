@@ -149,3 +149,50 @@ Implemented and tested:
 - SHA-256 and cmp integrity verification
 
 The next stage focuses on structured logging, robustness and final integration testing.
+## Stage 8 - Structured Logging and Final Integration Testing
+
+Completed.
+
+The NetMessenger server now provides structured, timestamped logging through:
+
+`netmsg_IT23577206.log`
+
+The log records important server and protocol events including:
+
+- Server start and stop
+- Client connections and disconnections
+- REGISTER
+- LIST
+- BCAST
+- PMSG
+- JOIN
+- LEAVE
+- ROOMS
+- RMSG
+- SENDFILE
+- QUIT
+- Protocol errors
+
+Robustness testing was completed for invalid operations including unknown users, unknown rooms, non-member room messaging, duplicate usernames, and commands issued before registration.
+
+Final integration testing was completed using five simultaneous clients:
+
+- nathasha
+- fernando
+- anton
+- amal
+- rehan
+
+The five-client test verified:
+
+- Concurrent TCP client connections using POSIX threads
+- User registration and active-user listing
+- Broadcast messaging
+- Private messaging
+- Room creation and membership
+- Room-only messaging and isolation
+- TCP file sharing
+- Correct removal of disconnected clients
+- Structured error handling and logging
+
+The server and client compile successfully using `Makefile_7206`, and the implemented networking functionality remained operational after structured logging was introduced.

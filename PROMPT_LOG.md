@@ -97,3 +97,20 @@ The server and client were extended to support SENDFILE. The implementation rece
 
 **Evaluation / Changes Made:**
 Testing covered user-to-user transfer, room transfer, SHA-256 integrity, unknown targets, oversized files and interrupted transfers. The original file, server copy and recipient copies were verified as identical.
+## Interaction 8
+
+**Date:** 05 October 2026
+**Tool:** ChatGPT
+
+**Prompt / Purpose:**
+Requested step-by-step guidance for implementing structured server-side logging, robustness testing, and final multi-client integration testing for the NetMessenger application.
+
+**How the output was used:**
+The server was extended with a thread-safe logging mechanism that writes timestamped protocol events to `netmsg_IT23577206.log`. Logging was incorporated for server start and stop, connections, registration, LIST, broadcast messages, private messages, room operations, file transfers, QUIT, disconnects, and protocol errors.
+
+The implementation was tested using invalid users, unknown rooms, non-member room messaging, duplicate usernames, and commands before registration. The generated log was inspected to verify that errors and normal protocol activity were recorded correctly.
+
+A final integration test was also carried out with five simultaneous clients: nathasha, fernando, anton, amal and rehan. Broadcast messaging, private messaging, room isolation, SENDFile transfer, client removal after QUIT, and the active-user LIST were verified.
+
+**Evaluation / Changes Made:**
+The logging functionality worked without affecting the previously implemented networking features. The server and client compiled successfully, the five-client test completed successfully, and the final log contained timestamped evidence of both normal operations and error conditions.

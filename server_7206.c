@@ -21,6 +21,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <time.h>
+#include <stdarg.h>
 
 #define PORT 13206
 #define BACKLOG 10
@@ -71,6 +73,86 @@ static Room rooms[MAX_ROOMS];
 
 static pthread_mutex_t rooms_mutex =
     PTHREAD_MUTEX_INITIALIZER;
+
+/*
+ * Thread-safe structured logging.
+ * All server threads share the same log file, so a mutex
+ * prevents multiple threads writing to it simultaneously.
+ */
+
+#define LOG_FILE "netmsg_IT23577206.log"
+
+static pthread_mutex_t log_mutex =
+    PTHREAD_MUTEX_INITIALIZER;
+
+static void log_event(
+    const char *level,
+    const char *username,
+    const char *format,
+    ...)
+{
+    pthread_mutex_lock(&log_mutex);
+
+    FILE *log_file = fopen(LOG_FILE, "a");
+
+    if (log_file != NULL) {
+
+        time_t now = time(NULL);
+        struct tm time_info;
+
+        localtime_r(&now, &time_info);
+
+        char timestamp[32];
+
+        strftime(
+            timestamp,
+            sizeof(timestamp),
+            "%Y-%m-%d %H:%M:%S",
+            &time_info);
+
+        fprintf(
+            log_file,
+            "[%s] [%s] [%s] ",
+            timestamp,
+            level,
+            username != NULL && username[0] != '\0'
+                ? username
+                : "unregistered");
+
+        va_list arguments;
+
+        va_start(arguments, format);
+        vfprintf(log_file, format, arguments);
+        va_end(arguments);
+
+        fprintf(log_file, "\n");
+
+        fclose(log_file);
+    }
+
+    pthread_mutex_unlock(&log_mutex);
+}
+
+
+/*
+ * Graceful server shutdown state. Ctrl+C / SIGTERM closes the
+ * listening socket so accept() wakes up, then main() records
+ * SERVER STOP in the log before exiting.
+ */
+static volatile sig_atomic_t stop_requested = 0;
+static volatile sig_atomic_t listening_socket = -1;
+
+static void handle_stop_signal(int signal_number)
+{
+    (void)signal_number;
+
+    stop_requested = 1;
+
+    if (listening_socket >= 0) {
+        close((int)listening_socket);
+        listening_socket = -1;
+    }
+}
 
 
 /*
@@ -1118,6 +1200,7 @@ static void *handle_client(void *arg)
 
 
     printf("[+] TCP client connected.\n");
+    log_event("CONNECT", NULL, "client thread started");
 
 
     while (1) {
@@ -1163,6 +1246,10 @@ static void *handle_client(void *arg)
                     client,
                     "ERR 005 REGISTER_REQUIRED NID:5772\n");
 
+                log_event("ERROR", NULL,
+                          "ERR 005 REGISTER_REQUIRED command=%s",
+                          line);
+
                 break;
             }
 
@@ -1181,6 +1268,9 @@ static void *handle_client(void *arg)
                     client,
                     "ERR 006 INVALID_USERNAME NID:5772\n");
 
+                log_event("ERROR", username,
+                          "ERR 006 INVALID_USERNAME");
+
                 continue;
             }
 
@@ -1192,6 +1282,9 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 001 USERNAME_TAKEN NID:5772\n");
+
+                log_event("ERROR", username,
+                          "ERR 001 USERNAME_TAKEN");
 
                 continue;
             }
@@ -1215,6 +1308,9 @@ static void *handle_client(void *arg)
             printf("[REGISTERED] %s\n",
                    client->username);
 
+            log_event("REGISTER", client->username,
+                      "registration successful");
+
             continue;
         }
 
@@ -1226,6 +1322,8 @@ static void *handle_client(void *arg)
                    "LIST") == 0) {
 
             send_user_list(client);
+            log_event("LIST", client->username,
+                      "requested active user list");
 
             continue;
         }
@@ -1249,6 +1347,9 @@ static void *handle_client(void *arg)
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
 
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=BCAST");
+
                 continue;
             }
 
@@ -1266,6 +1367,9 @@ static void *handle_client(void *arg)
             printf("[BCAST] %s: %s\n",
                    client->username,
                    message);
+
+            log_event("BCAST", client->username,
+                      "message=%s", message);
 
             continue;
         }
@@ -1294,6 +1398,9 @@ static void *handle_client(void *arg)
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
 
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=PMSG");
+
                 continue;
             }
 
@@ -1315,6 +1422,9 @@ static void *handle_client(void *arg)
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
 
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=PMSG");
+
                 continue;
             }
 
@@ -1327,6 +1437,9 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 002 USER_NOT_FOUND NID:5772\n");
+
+                log_event("ERROR", client->username,
+                          "ERR 002 USER_NOT_FOUND target=%s", target);
 
                 continue;
             }
@@ -1341,6 +1454,9 @@ static void *handle_client(void *arg)
                    client->username,
                    target,
                    message);
+
+            log_event("PMSG", client->username,
+                      "target=%s message=%s", target, message);
 
             continue;
         }
@@ -1367,6 +1483,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=SENDFILE");
 
                 break;
             }
@@ -1387,6 +1505,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=SENDFILE");
 
                 break;
             }
@@ -1405,6 +1525,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=SENDFILE");
 
                 break;
             }
@@ -1427,6 +1549,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=SENDFILE");
 
                 break;
             }
@@ -1443,6 +1567,9 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 004 FILE_TOO_LARGE NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 004 FILE_TOO_LARGE target=%s file=%s size=%llu",
+                          target, filename, filesize);
 
                 break;
             }
@@ -1460,6 +1587,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 011 STORAGE_ERROR NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 011 STORAGE_ERROR file=%s", filename);
 
                 break;
             }
@@ -1474,6 +1603,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 011 STORAGE_ERROR NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 011 STORAGE_ERROR file=%s", filename);
 
                 break;
             }
@@ -1496,6 +1627,9 @@ static void *handle_client(void *arg)
 
                 printf("[FILE] Transfer interrupted: %s\n",
                        filename);
+                log_event("ERROR", client->username,
+                          "interrupted SENDFILE target=%s file=%s size=%llu",
+                          target, filename, filesize);
 
                 break;
             }
@@ -1525,6 +1659,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 002 USER_NOT_FOUND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 002 USER_NOT_FOUND SENDFILE target=%s", target);
 
                 continue;
             }
@@ -1550,6 +1686,10 @@ static void *handle_client(void *arg)
                    filename,
                    filesize);
 
+            log_event("SENDFILE", client->username,
+                      "target=%s file=%s size=%llu",
+                      target, filename, filesize);
+
             continue;
         }
 
@@ -1572,6 +1712,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=JOIN");
 
                 continue;
             }
@@ -1583,6 +1725,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 009 ROOM_LIMIT_REACHED NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 009 ROOM_LIMIT_REACHED room=%s", room_name);
 
                 continue;
             }
@@ -1604,6 +1748,8 @@ static void *handle_client(void *arg)
             printf("[JOIN] %s -> %s\n",
                    client->username,
                    room_name);
+            log_event("JOIN", client->username,
+                      "room=%s", room_name);
 
             continue;
         }
@@ -1630,6 +1776,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 003 ROOM_NOT_FOUND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 003 ROOM_NOT_FOUND room=%s", room_name);
 
                 continue;
             }
@@ -1640,6 +1788,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 010 NOT_IN_ROOM NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 010 NOT_IN_ROOM room=%s", room_name);
 
                 continue;
             }
@@ -1661,6 +1811,8 @@ static void *handle_client(void *arg)
             printf("[LEAVE] %s <- %s\n",
                    client->username,
                    room_name);
+            log_event("LEAVE", client->username,
+                      "room=%s", room_name);
 
             continue;
         }
@@ -1673,6 +1825,8 @@ static void *handle_client(void *arg)
                    "ROOMS") == 0) {
 
             send_room_list(client);
+            log_event("ROOMS", client->username,
+                      "requested room list");
 
             continue;
         }
@@ -1699,6 +1853,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=RMSG");
 
                 continue;
             }
@@ -1720,6 +1876,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 007 INVALID_COMMAND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 007 INVALID_COMMAND command=RMSG");
 
                 continue;
             }
@@ -1736,6 +1894,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 003 ROOM_NOT_FOUND NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 003 ROOM_NOT_FOUND room=%s", room_name);
 
                 continue;
             }
@@ -1746,6 +1906,8 @@ static void *handle_client(void *arg)
                 send_to_client(
                     client,
                     "ERR 010 NOT_IN_ROOM NID:5772\n");
+                log_event("ERROR", client->username,
+                          "ERR 010 NOT_IN_ROOM room=%s", room_name);
 
                 continue;
             }
@@ -1760,6 +1922,8 @@ static void *handle_client(void *arg)
                    client->username,
                    room_name,
                    message);
+            log_event("RMSG", client->username,
+                      "room=%s message=%s", room_name, message);
 
             continue;
         }
@@ -1774,6 +1938,8 @@ static void *handle_client(void *arg)
             send_to_client(
                 client,
                 "OK BYE NID:5772\n");
+            log_event("QUIT", client->username,
+                      "client requested QUIT");
 
             break;
         }
@@ -1785,6 +1951,8 @@ static void *handle_client(void *arg)
         send_to_client(
             client,
             "ERR 007 INVALID_COMMAND NID:5772\n");
+        log_event("ERROR", client->username,
+                  "ERR 007 INVALID_COMMAND command=%s", line);
     }
 
 
@@ -1793,11 +1961,15 @@ static void *handle_client(void *arg)
         printf(
             "[-] User disconnected: %s\n",
             client->username);
+        log_event("DISCONNECT", client->username,
+                  "client disconnected");
     }
     else {
 
         printf(
             "[-] Unregistered client disconnected.\n");
+        log_event("DISCONNECT", NULL,
+                  "unregistered client disconnected");
     }
 
 
@@ -1826,6 +1998,15 @@ int main(void)
     signal(SIGPIPE,
            SIG_IGN);
 
+    struct sigaction stop_action;
+    memset(&stop_action, 0, sizeof(stop_action));
+    stop_action.sa_handler = handle_stop_signal;
+    sigemptyset(&stop_action.sa_mask);
+    stop_action.sa_flags = 0;
+
+    sigaction(SIGINT, &stop_action, NULL);
+    sigaction(SIGTERM, &stop_action, NULL);
+
 
     server_socket =
         socket(
@@ -1840,6 +2021,8 @@ int main(void)
 
         return EXIT_FAILURE;
     }
+
+    listening_socket = server_socket;
 
 
     int option = 1;
@@ -1915,8 +2098,11 @@ int main(void)
     printf(
         "Server is waiting for clients...\n");
 
+    log_event("SERVER", NULL,
+              "START port=%d node=NID:5772", PORT);
 
-    while (1) {
+
+    while (!stop_requested) {
 
         struct sockaddr_in
             client_address;
@@ -1936,6 +2122,14 @@ int main(void)
 
         if (client_socket < 0) {
 
+            if (stop_requested) {
+                break;
+            }
+
+            if (errno == EINTR) {
+                continue;
+            }
+
             perror("accept");
 
             continue;
@@ -1948,6 +2142,11 @@ int main(void)
                 client_address.sin_addr),
             ntohs(
                 client_address.sin_port));
+
+        log_event("CONNECT", NULL,
+                  "peer=%s:%d",
+                  inet_ntoa(client_address.sin_addr),
+                  ntohs(client_address.sin_port));
 
 
         Client *client =
@@ -1984,6 +2183,8 @@ int main(void)
             send_to_client(
                 client,
                 "ERR 008 SERVER_FULL NID:5772\n");
+            log_event("ERROR", NULL,
+                      "ERR 008 SERVER_FULL");
 
             close(client_socket);
 
@@ -2006,6 +2207,8 @@ int main(void)
                 client) != 0) {
 
             perror("pthread_create");
+            log_event("ERROR", NULL,
+                      "pthread_create failed: %s", strerror(errno));
 
             remove_client(client);
 
@@ -2025,7 +2228,12 @@ int main(void)
     }
 
 
-    close(server_socket);
+    if (listening_socket >= 0) {
+        close((int)listening_socket);
+        listening_socket = -1;
+    }
+
+    log_event("SERVER", NULL, "STOP");
 
     return EXIT_SUCCESS;
 }

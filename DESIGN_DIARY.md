@@ -129,3 +129,18 @@ A maximum file size of 10 MiB was used as an implementation assumption because t
 Testing confirmed successful user-to-user transfer, room transfer to multiple recipients, byte-for-byte integrity using SHA-256 and cmp, unknown-target handling, oversized-file rejection, and deletion of incomplete files following an interrupted transfer.
 
 The next development stage is structured logging, robustness and final integration testing.
+## Entry 8 - Structured Logging and Final Integration Testing
+
+**Date:** 05 October 2026
+
+Structured server-side logging was added to NetMessenger using the personalised log file `netmsg_IT23577206.log`. The logging mechanism records important server and protocol events with timestamps while preserving the existing multi-threaded networking behaviour.
+
+The logger records events including client connections, registration, LIST requests, broadcasts, private messages, room joins, room messages, file transfers, client QUIT operations, disconnections, server start/stop events, and protocol errors.
+
+Error handling was verified using invalid users, unknown rooms, attempts to send room messages without membership, duplicate usernames, and commands issued before registration. These events were recorded in the log with the associated username and error information.
+
+A final integration test was performed using five simultaneous clients: nathasha, fernando, anton, amal and rehan. LIST correctly displayed all five connected users. Broadcast messaging reached all connected clients, room messaging was restricted to room members, private messaging reached only the intended recipient, and SENDFile successfully transferred a file between clients.
+
+Client disconnection was also tested. After a client issued QUIT, the client was removed from the active user list and subsequent LIST output correctly reflected the remaining connected clients.
+
+The final implementation compiled successfully using the personalised Makefile, and `git diff --check` completed without errors. This confirmed that the major Part 1 networking functionality remained operational after structured logging was introduced.
