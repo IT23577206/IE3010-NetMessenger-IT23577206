@@ -32,21 +32,32 @@
 #define MAX_ROOMS 32
 #define MAX_FILENAME 256
 #define MAX_LINE 1024
-
+/*
+ * Optional extension: lightweight token authentication.
+ * Clients must supply this token during registration.
+ */
+#define AUTH_TOKEN "NETMSG5772"
 /*
  * The assignment defines FILE_TOO_LARGE but does not
  * prescribe a numerical limit. This implementation
  * uses a documented limit of 10 MiB.
  */
 #define MAX_FILE_SIZE (10ULL * 1024ULL * 1024ULL)
-
+/*
+ * Optional extension: basic flood protection.
+ * A client may send at most 10 commands within a 5-second window.
+ */
+#define RATE_LIMIT_COMMANDS 10
+#define RATE_LIMIT_WINDOW 5
 #define STORAGE_ROOT "./storage/IT23577206"
 
 typedef struct {
     int socket_fd;
     int registered;
     char username[MAX_USERNAME];
-
+    /* Per-client flood-protection state. */
+    time_t rate_window_start;
+    unsigned int rate_command_count;
     /*
      * Protects writes to this client's socket.
      * Several server threads may send data to the
@@ -1230,7 +1241,35 @@ static void *handle_client(void *arg)
                    ? client->username
                    : "unregistered",
                line);
+        /*
+         * Optional extension: per-client rate limiting.
+         * Prevents one client from flooding the server with commands.
+         */
+        time_t now = time(NULL);
 
+        if (client->rate_window_start == 0 ||
+            difftime(now, client->rate_window_start) >= RATE_LIMIT_WINDOW) {
+
+            client->rate_window_start = now;
+            client->rate_command_count = 0;
+        }
+
+        client->rate_command_count++;
+
+        if (client->rate_command_count > RATE_LIMIT_COMMANDS) {
+            send_to_client(
+                client,
+                "ERR 011 RATE_LIMIT NID:5772\n");
+
+            log_event(
+                "SECURITY",
+                client->registered ? client->username : NULL,
+                "RATE_LIMIT exceeded commands=%u window=%d",
+                client->rate_command_count,
+                RATE_LIMIT_WINDOW);
+
+            continue;
+        }
 
         /*
          * REGISTER must be the first command.
@@ -1254,9 +1293,34 @@ static void *handle_client(void *arg)
             }
 
 
-            const char *username =
-                line + 9;
+           char username[MAX_USERNAME];
+char token[64];
 
+if (sscanf(line + 9, "%31s %63s", username, token) != 2) {
+    send_to_client(
+        client,
+        "ERR 012 AUTH_REQUIRED NID:5772\n");
+
+    log_event(
+        "SECURITY",
+        NULL,
+        "AUTH_REQUIRED invalid REGISTER format");
+
+    continue;
+}
+
+if (strcmp(token, AUTH_TOKEN) != 0) {
+    send_to_client(
+        client,
+        "ERR 013 AUTH_FAILED NID:5772\n");
+
+    log_event(
+        "SECURITY",
+        username,
+        "AUTH_FAILED invalid token");
+
+    continue;
+}
 
             if (strlen(username) == 0 ||
                 strlen(username) >= MAX_USERNAME ||
